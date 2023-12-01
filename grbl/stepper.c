@@ -199,6 +199,18 @@ static st_prep_t prep;
   stepper algorithm and consists of only 7 possible types of profiles: cruise-only, cruise-
   deceleration, acceleration-cruise, acceleration-only, deceleration-only, full-trapezoid, and
   triangle(no cruise).
+  规划程序块缓冲区的规划假定了恒定的加速度速度曲线，并在上图所示的程序块连接处连续连接。
+  如上图所示，在区块交界处连续连接。不过，规划器只主动计算
+  区块入口速度，但不会计算区块内部速度曲线。
+  速度曲线。这些速度曲线是在步进算法执行时临时计算的。
+  步进算法执行时临时计算的，只包括 7 种可能的剖面：仅巡航、巡航-减速、加速-巡航、加速-减速、加速-巡航、加速-减速、加速-巡航。
+  减速、加速-巡航、仅加速、仅减速、全梯形和三角形（无巡航）。
+  三角形（无巡航）。
+
+  规划器块缓冲是在假定恒定加速度速度曲线的情况下进行规划的，并在块连接点连续连接，
+  如上所示。然而，规划器仅在计算最佳速度计划时主动计算块的进入速度，但不计算块的内部速度曲线。
+  这些速度曲线是按需由执行步进算法时计算的，
+  总共包括7种可能的类型：仅巡航、巡航减速、加速巡航、仅加速、仅减速、完整梯形和三角形（无巡航）
 
                                         maximum_speed (< nominal_speed) ->  +
                     +--------+ <- maximum_speed (= nominal_speed)          /|\
@@ -216,6 +228,10 @@ static st_prep_t prep;
   The step segment buffer computes the executing block velocity profile and tracks the critical
   parameters for the stepper algorithm to accurately trace the profile. These critical parameters
   are shown and defined in the above illustration.
+
+    步进段缓冲器计算执行块的速度曲线，并跟踪关键参数，以便步进算法准确跟踪曲线。
+  参数，以便步进算法准确跟踪曲线。这些关键参数
+  如上图所示。
 */
 
 
@@ -307,6 +323,33 @@ void st_go_idle()
    ISR is supported by The Stepper Port Reset Interrupt which it uses to reset the stepper port
    after each pulse. The bresenham line tracer algorithm controls all stepper outputs
    simultaneously with these two interrupts.
+
+  "Stepper Driver Interrupt" - 这个定时器中断是Grbl的核心。Grbl采用古老而可靠的Bresenham线算法来管理和精确同步多轴移动。
+  与流行的DDA算法不同，Bresenham算法不容易受到数值舍入误差的影响，只需要快速的整数计数器，从而降低计算开销并最大限度地发挥Arduino
+  的能力。然而，Bresenham算法的缺点是，在某些多轴运动中，非主轴可能会出现不平滑的步进脉冲序列或混叠，这可能导致奇怪的听觉噪音或晃动。
+  尤其是在低步进频率（0-5kHz）下，这可能引起运动问题，但在更高频率下通常不是物理问题，尽管可以听到声音。
+
+  为了提高Bresenham多轴性能，Grbl使用我们称之为自适应多轴步进平滑（AMASS）算法，其功能如其名称所示。
+  在较低的步进频率下，AMASS通过人为增加Bresenham分辨率而不影响算法的固有准确性来改进性能。
+  AMASS根据要执行的步进频率自动调整其分辨率级别，这意味着即使在更低的步进频率下，步进平滑级别也会增加。
+  在算法上，AMASS通过对每个AMASS级别的Bresenham步数进行简单的位移来实现。例如，对于Level 1的步进平滑，
+  我们位移Bresenham步事件计数，有效地将其乘以2，而轴步数保持不变，然后将步进ISR频率加倍。实际上，
+  我们允许非主导的Bresenham轴在中间的ISR tick中步进，而主导轴则在每两个ISR tick中步进，
+  而不是传统意义上的每个ISR tick。在AMASS Level 2中，我们简单地再次进行位移，
+  因此非主导的Bresenham轴可以在任何四个ISR tick中步进，主导轴在每四个ISR tick中步进，
+  并将步进ISR频率增加四倍。依此类推。这实际上几乎消除了Bresenham算法的多轴混叠问题，
+  并且实际上并不显著改变Grbl的性能，而是更有效地利用所有配置中未使用的CPU周期。
+
+  AMASS通过要求其始终执行完整的Bresenham步来保持Bresenham算法的准确性。
+  这意味着对于AMASS Level 2，必须完成所有四个中间步骤，以便始终保留基线Bresenham（Level 0）计数。
+  类似地，AMASS Level 3表示必须执行所有八个中间步骤。尽管AMASS Levels实际上是任意的，
+  其中基线Bresenham计数可以乘以任何整数值，但使用2的幂的乘法只是为了通过位移整数操作简化CPU开销。
+
+  这个中断设计上是简单且愚笨的。所有计算中的重活，比如确定加速度，都是在其他地方完成的。
+  这个中断从步进段缓冲中弹出预先计算的段，这些段被定义为在n个步骤上的恒定速度，
+  然后通过Bresenham算法适当地通过脉冲步进引脚来执行它们。
+  这个ISR由Stepper Port Reset Interrupt支持，它在每个脉冲之后用于重置步进口
+  。Bresenham线追踪算法通过这两个中断同时控制所有步进输出。
 
    NOTE: This interrupt must be as efficient as possible and complete before the next ISR tick,
    which for Grbl must be less than 33.3usec (@30kHz ISR rate). Oscilloscope measured time in
